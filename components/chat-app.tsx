@@ -151,6 +151,7 @@ export function ChatApp() {
   const [imageFile, setImageFile] = useState<File | null>(null);
   const [micStatus, setMicStatus] = useState<MicStatus>("idle");
   const [transcript, setTranscript] = useState("");
+  const [micError, setMicError] = useState("");
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
@@ -191,17 +192,29 @@ export function ChatApp() {
     recognition.lang = "en-US";
 
     setMicStatus("recording-sr");
+    setMicError("");
     recognitionRef.current = recognition;
 
+    let gotResult = false;
+
     recognition.onresult = (event: { results: { [key: number]: { [key: number]: { transcript: string } } } }) => {
+      gotResult = true;
       const text = event.results[0][0].transcript;
       recognitionRef.current = null;
+      setMicError("");
       setMicStatus("idle");
       sendTranscript(text);
     };
-    // onerror and onend must not override onresult — only reset if no result came
-    recognition.onerror = () => { recognitionRef.current = null; setMicStatus("idle"); };
-    recognition.onend = () => { recognitionRef.current = null; setMicStatus((s) => s === "recording-sr" ? "idle" : s); };
+    recognition.onerror = (e: { error: string }) => {
+      recognitionRef.current = null;
+      setMicStatus("idle");
+      setMicError(`Mic error: ${e.error}. Try speaking more clearly or use the text input.`);
+    };
+    recognition.onend = () => {
+      recognitionRef.current = null;
+      setMicStatus("idle");
+      if (!gotResult) setMicError("No speech detected. Try again or use the text input.");
+    };
     recognition.start();
   }, [sendTranscript]);
 
@@ -249,9 +262,10 @@ export function ChatApp() {
   }, [sendTranscript]);
 
   const handleMicClick = useCallback(async () => {
-    // stop() processes buffered audio and fires onresult before ending
     if (micStatus === "recording-sr") {
       recognitionRef.current?.stop();
+      recognitionRef.current = null;
+      setMicStatus("idle");
       return;
     }
 
@@ -447,6 +461,9 @@ export function ChatApp() {
             {micStatus === "idle" && !isBusy && "Click mic to speak your request"}
             {isBusy && micStatus === "idle" && "Agent is running…"}
           </p>
+          {micError && (
+            <p className="text-xs text-red-400">{micError}</p>
+          )}
 
           {/* text input toggle */}
           <button
