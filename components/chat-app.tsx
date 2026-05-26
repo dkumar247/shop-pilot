@@ -249,8 +249,11 @@ export function ChatApp() {
   }, [sendTranscript]);
 
   const handleMicClick = useCallback(async () => {
-    // SpeechRecognition auto-stops on silence — don't interrupt it
-    if (micStatus === "recording-sr") return;
+    // stop() processes buffered audio and fires onresult before ending
+    if (micStatus === "recording-sr") {
+      recognitionRef.current?.stop();
+      return;
+    }
 
     // MediaRecorder needs a manual stop click
     if (micStatus === "recording-mr") {
@@ -417,10 +420,10 @@ export function ChatApp() {
             <button
               type="button"
               onClick={handleMicClick}
-              disabled={micStatus === "processing" || micStatus === "recording-sr" || isBusy}
+              disabled={micStatus === "processing" || isBusy}
               className={`relative flex h-20 w-20 items-center justify-center rounded-full text-3xl shadow-lg transition-all ${
                 micStatus === "recording-sr"
-                  ? "cursor-default bg-red-600"
+                  ? "bg-red-600 hover:bg-red-700"
                   : micStatus === "recording-mr"
                     ? "bg-red-600 hover:bg-red-700"
                     : micStatus === "processing" || isBusy
@@ -438,7 +441,7 @@ export function ChatApp() {
           </div>
 
           <p className="text-xs text-zinc-500">
-            {micStatus === "recording-sr" && "Listening… speak then pause, transcript will appear"}
+            {micStatus === "recording-sr" && "Listening… speak then click stop or pause naturally"}
             {micStatus === "recording-mr" && "Recording… click to stop"}
             {micStatus === "processing" && "Transcribing…"}
             {micStatus === "idle" && !isBusy && "Click mic to speak your request"}
