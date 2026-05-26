@@ -187,33 +187,40 @@ export function ChatApp() {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const SR = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
     const recognition = new SR();
-    recognition.continuous = false;
-    recognition.interimResults = false;
+    recognition.continuous = true;
+    recognition.interimResults = true;
     recognition.lang = "en-US";
 
     setMicStatus("recording-sr");
     setMicError("");
+    setTranscript("");
     recognitionRef.current = recognition;
 
-    let gotResult = false;
+    let accumulated = "";
 
-    recognition.onresult = (event: { results: { [key: number]: { [key: number]: { transcript: string } } } }) => {
-      gotResult = true;
-      const text = event.results[0][0].transcript;
-      recognitionRef.current = null;
-      setMicError("");
-      setMicStatus("idle");
-      sendTranscript(text);
+    recognition.onresult = (event: { results: { length: number; [key: number]: { isFinal: boolean; [key: number]: { transcript: string } } } }) => {
+      accumulated = "";
+      for (let i = 0; i < event.results.length; i++) {
+        accumulated += event.results[i][0].transcript;
+      }
+      // show live transcript as user speaks
+      setTranscript(accumulated);
     };
     recognition.onerror = (e: { error: string }) => {
       recognitionRef.current = null;
       setMicStatus("idle");
-      setMicError(`Mic error: ${e.error}. Try speaking more clearly or use the text input.`);
+      if (e.error !== "no-speech") {
+        setMicError(`Mic error: ${e.error}. Try the text input instead.`);
+      }
     };
     recognition.onend = () => {
       recognitionRef.current = null;
       setMicStatus("idle");
-      if (!gotResult) setMicError("No speech detected. Try again or use the text input.");
+      if (accumulated.trim()) {
+        sendTranscript(accumulated.trim());
+      } else {
+        setMicError("No speech detected. Try again or use the text input.");
+      }
     };
     recognition.start();
   }, [sendTranscript]);
