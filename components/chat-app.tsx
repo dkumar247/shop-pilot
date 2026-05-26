@@ -117,7 +117,7 @@ function CartSummaryCard({ summary }: { summary: CartSummary }) {
   );
 }
 
-type MicStatus = "idle" | "recording" | "processing";
+type MicStatus = "idle" | "recording-sr" | "recording-mr" | "processing";
 
 export function ChatApp() {
   const [mode, setMode] = useState<Mode>("agent");
@@ -165,7 +165,7 @@ export function ChatApp() {
     recognition.interimResults = false;
     recognition.lang = "en-US";
 
-    setMicStatus("recording");
+    setMicStatus("recording-sr");
     recognitionRef.current = recognition;
 
     recognition.onresult = (event: { results: { [key: number]: { [key: number]: { transcript: string } } } }) => {
@@ -174,8 +174,9 @@ export function ChatApp() {
       setMicStatus("idle");
       sendTranscript(text);
     };
+    // onerror and onend must not override onresult — only reset if no result came
     recognition.onerror = () => { recognitionRef.current = null; setMicStatus("idle"); };
-    recognition.onend = () => { recognitionRef.current = null; setMicStatus("idle"); };
+    recognition.onend = () => { recognitionRef.current = null; setMicStatus((s) => s === "recording-sr" ? "idle" : s); };
     recognition.start();
   }, [sendTranscript]);
 
@@ -219,16 +220,19 @@ export function ChatApp() {
 
     mediaRecorderRef.current = recorder;
     recorder.start();
-    setMicStatus("recording");
+    setMicStatus("recording-mr");
   }, [sendTranscript]);
 
   const handleMicClick = useCallback(async () => {
-    if (micStatus === "recording") {
-      recognitionRef.current?.stop();
+    // SpeechRecognition auto-stops on silence — don't interrupt it
+    if (micStatus === "recording-sr") return;
+
+    // MediaRecorder needs a manual stop click
+    if (micStatus === "recording-mr") {
       mediaRecorderRef.current?.stop();
-      setMicStatus("idle");
       return;
     }
+
     if (micStatus === "processing" || isBusy) return;
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -382,28 +386,35 @@ export function ChatApp() {
 
           {/* mic button */}
           <div className="relative flex items-center justify-center">
-            {micStatus === "recording" && (
+            {(micStatus === "recording-sr" || micStatus === "recording-mr") && (
               <span className="absolute inline-flex h-24 w-24 animate-ping rounded-full bg-[#FF5C28] opacity-20" />
             )}
             <button
               type="button"
               onClick={handleMicClick}
-              disabled={micStatus === "processing" || isBusy}
+              disabled={micStatus === "processing" || micStatus === "recording-sr" || isBusy}
               className={`relative flex h-20 w-20 items-center justify-center rounded-full text-3xl shadow-lg transition-all ${
-                micStatus === "recording"
-                  ? "bg-red-600 hover:bg-red-700"
-                  : micStatus === "processing" || isBusy
-                    ? "cursor-not-allowed bg-zinc-700"
-                    : "bg-[#FF5C28] hover:bg-[#ff7347]"
+                micStatus === "recording-sr"
+                  ? "cursor-default bg-red-600"
+                  : micStatus === "recording-mr"
+                    ? "bg-red-600 hover:bg-red-700"
+                    : micStatus === "processing" || isBusy
+                      ? "cursor-not-allowed bg-zinc-700"
+                      : "bg-[#FF5C28] hover:bg-[#ff7347]"
               }`}
-              title={micStatus === "recording" ? "Stop recording" : "Start recording"}
+              title={
+                micStatus === "recording-sr" ? "Listening… speak now"
+                : micStatus === "recording-mr" ? "Click to stop"
+                : "Start recording"
+              }
             >
-              {micStatus === "recording" ? "⏹" : micStatus === "processing" ? "⏳" : "🎙"}
+              {micStatus === "recording-sr" || micStatus === "recording-mr" ? "⏹" : micStatus === "processing" ? "⏳" : "🎙"}
             </button>
           </div>
 
           <p className="text-xs text-zinc-500">
-            {micStatus === "recording" && "Recording… click to stop"}
+            {micStatus === "recording-sr" && "Listening… speak then pause, transcript will appear"}
+            {micStatus === "recording-mr" && "Recording… click to stop"}
             {micStatus === "processing" && "Transcribing…"}
             {micStatus === "idle" && !isBusy && "Click mic to speak your request"}
             {isBusy && micStatus === "idle" && "Agent is running…"}
