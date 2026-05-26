@@ -129,7 +129,9 @@ export function ChatApp() {
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const recognitionRef = useRef<{ stop: () => void } | null>(null);
   const chunksRef = useRef<Blob[]>([]);
+  const sentRef = useRef(false);
 
   const transport = useMemo(
     () =>
@@ -146,8 +148,11 @@ export function ChatApp() {
 
   const sendTranscript = useCallback(
     (text: string) => {
+      if (sentRef.current) return;
+      sentRef.current = true;
       setTranscript(text);
       sendMessage({ parts: [{ type: "text", text }] });
+      setTimeout(() => { sentRef.current = false; }, 2000);
     },
     [sendMessage],
   );
@@ -161,14 +166,16 @@ export function ChatApp() {
     recognition.lang = "en-US";
 
     setMicStatus("recording");
+    recognitionRef.current = recognition;
 
     recognition.onresult = (event: { results: { [key: number]: { [key: number]: { transcript: string } } } }) => {
       const text = event.results[0][0].transcript;
+      recognitionRef.current = null;
       setMicStatus("idle");
       sendTranscript(text);
     };
-    recognition.onerror = () => setMicStatus("idle");
-    recognition.onend = () => setMicStatus("idle");
+    recognition.onerror = () => { recognitionRef.current = null; setMicStatus("idle"); };
+    recognition.onend = () => { recognitionRef.current = null; setMicStatus("idle"); };
     recognition.start();
   }, [sendTranscript]);
 
@@ -217,6 +224,7 @@ export function ChatApp() {
 
   const handleMicClick = useCallback(async () => {
     if (micStatus === "recording") {
+      recognitionRef.current?.stop();
       mediaRecorderRef.current?.stop();
       setMicStatus("idle");
       return;
