@@ -2,7 +2,7 @@ import { createOpenAI } from "@ai-sdk/openai";
 
 export const SUBCONSCIOUS_MODEL_ID = "subconscious/tim-qwen3.6-27b";
 
-const SUBC_BASE_URL = "https://api.subconscious.dev/v1";
+const SUBC_BASE_URL = process.env.CLOUDFLARE_AI_GATEWAY_URL ?? "https://api.subconscious.dev/v1";
 
 /**
  * Subconscious defaults thinking ON. TIM gates it via
