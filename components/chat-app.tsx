@@ -2,7 +2,7 @@
 
 import { useChat } from "@ai-sdk/react";
 import { DefaultChatTransport, type UIMessage } from "ai";
-import { useMemo, useRef, useState } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 
 type Mode = "chat" | "agent";
 
@@ -62,24 +62,175 @@ function MessagePart({
   return null;
 }
 
+type CartSummary = {
+  items?: Array<{ name: string; price: string }>;
+  total?: string;
+  name?: string;
+  price?: string;
+};
+
+function extractCartSummary(messages: UIMessage[]): CartSummary | null {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const msg = messages[i];
+    if (msg.role !== "assistant") continue;
+    for (const part of msg.parts) {
+      if (
+        part.type.includes("getCartSummary") &&
+        "state" in part &&
+        part.state === "output-available" &&
+        "output" in part
+      ) {
+        return (part as unknown as { output: CartSummary }).output;
+      }
+    }
+  }
+  return null;
+}
+
+function CartSummaryCard({ summary }: { summary: CartSummary }) {
+  const name = summary.name ?? summary.items?.[0]?.name ?? "Item";
+  const price = summary.price ?? summary.items?.[0]?.price ?? summary.total ?? "";
+
+  return (
+    <div className="mt-4 rounded-2xl border border-[#FF5C28] bg-zinc-950 p-5 shadow-lg shadow-[#FF5C28]/10">
+      <p className="text-xs font-medium uppercase tracking-wider text-[#FF5C28]">
+        Added to cart
+      </p>
+      <p className="mt-2 text-2xl font-semibold text-white">{name}</p>
+      {price && (
+        <p className="mt-1 text-xl font-medium text-[#22c55e]">{price}</p>
+      )}
+      {summary.total && summary.items && (
+        <p className="mt-1 text-sm text-zinc-400">
+          Order total: {summary.total}
+        </p>
+      )}
+      <a
+        href="https://www.wayfair.com/checkout/cart"
+        target="_blank"
+        rel="noopener noreferrer"
+        className="mt-4 inline-block rounded-xl bg-[#FF5C28] px-5 py-2.5 text-sm font-semibold text-black hover:bg-[#ff7347]"
+      >
+        View cart on Wayfair →
+      </a>
+    </div>
+  );
+}
+
+type MicStatus = "idle" | "recording" | "processing";
+
 export function ChatApp() {
-  const [mode, setMode] = useState<Mode>("chat");
+  const [mode, setMode] = useState<Mode>("agent");
   const [input, setInput] = useState("");
+  const [showTextInput, setShowTextInput] = useState(false);
   const [imageFile, setImageFile] = useState<File | null>(null);
+  const [micStatus, setMicStatus] = useState<MicStatus>("idle");
+  const [transcript, setTranscript] = useState("");
+
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const chunksRef = useRef<Blob[]>([]);
 
   const transport = useMemo(
     () =>
       new DefaultChatTransport({
         api: "/api/chat",
-        body: { mode },
+        body: { mode: "agent" },
       }),
-    [mode],
+    [],
   );
 
   const { messages, sendMessage, status, error, stop } = useChat({ transport });
-
   const isBusy = status === "streaming" || status === "submitted";
+  const cartSummary = extractCartSummary(messages);
+
+  const sendTranscript = useCallback(
+    (text: string) => {
+      setTranscript(text);
+      sendMessage({ parts: [{ type: "text", text }] });
+    },
+    [sendMessage],
+  );
+
+  const startSpeechRecognition = useCallback(() => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const SR = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    const recognition = new SR();
+    recognition.continuous = false;
+    recognition.interimResults = false;
+    recognition.lang = "en-US";
+
+    setMicStatus("recording");
+
+    recognition.onresult = (event: { results: { [key: number]: { [key: number]: { transcript: string } } } }) => {
+      const text = event.results[0][0].transcript;
+      setMicStatus("idle");
+      sendTranscript(text);
+    };
+    recognition.onerror = () => setMicStatus("idle");
+    recognition.onend = () => setMicStatus("idle");
+    recognition.start();
+  }, [sendTranscript]);
+
+  const startMediaRecorder = useCallback(async () => {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    const recorder = new MediaRecorder(stream, { mimeType: "audio/webm" });
+    chunksRef.current = [];
+
+    recorder.ondataavailable = (e) => {
+      if (e.data.size > 0) chunksRef.current.push(e.data);
+    };
+
+    recorder.onstop = async () => {
+      stream.getTracks().forEach((t) => t.stop());
+      setMicStatus("processing");
+
+      try {
+        const blob = new Blob(chunksRef.current, { type: "audio/webm" });
+
+        const uploadRes = await fetch("/api/upload-audio", {
+          method: "POST",
+          headers: { "Content-Type": "audio/webm" },
+          body: blob,
+        });
+        const { key, error: uploadErr } = await uploadRes.json() as { key?: string; error?: string };
+        if (!key) throw new Error(uploadErr ?? "Upload failed");
+
+        const transcribeRes = await fetch("/api/transcribe", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ key }),
+        });
+        const { transcript: text, fallback } = await transcribeRes.json() as { transcript: string; fallback?: boolean };
+
+        setMicStatus("idle");
+        if (!fallback && text) sendTranscript(text);
+      } catch {
+        setMicStatus("idle");
+      }
+    };
+
+    mediaRecorderRef.current = recorder;
+    recorder.start();
+    setMicStatus("recording");
+  }, [sendTranscript]);
+
+  const handleMicClick = useCallback(async () => {
+    if (micStatus === "recording") {
+      mediaRecorderRef.current?.stop();
+      setMicStatus("idle");
+      return;
+    }
+    if (micStatus === "processing" || isBusy) return;
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const hasSR = !!(window as any).SpeechRecognition || !!(window as any).webkitSpeechRecognition;
+    if (hasSR) {
+      startSpeechRecognition();
+    } else {
+      await startMediaRecorder();
+    }
+  }, [micStatus, isBusy, startSpeechRecognition, startMediaRecorder]);
 
   async function handleSubmit(event: React.FormEvent) {
     event.preventDefault();
@@ -99,10 +250,7 @@ export function ChatApp() {
         filename: imageFile.name,
       });
     }
-
-    if (text) {
-      parts.push({ type: "text", text });
-    }
+    if (text) parts.push({ type: "text", text });
 
     sendMessage({ parts });
     setInput("");
@@ -116,13 +264,13 @@ export function ChatApp() {
         <div className="mx-auto flex max-w-5xl flex-col gap-4 px-4 py-5 sm:flex-row sm:items-center sm:justify-between">
           <div>
             <p className="text-xs font-medium uppercase tracking-wider text-[#FF5C28]">
-              Hackathon Starter
+              Wayfair Hack
             </p>
             <h1 className="text-xl font-semibold tracking-tight text-white">
-              Chat + Agents on Subconscious
+              Wayfair Shopping Agent
             </h1>
             <p className="mt-1 text-sm text-zinc-400">
-              Wayfair · Subconscious · Baseten · Cloudflare
+              Speak your request. Agent shops Wayfair. Item lands in your cart.
             </p>
           </div>
 
@@ -154,42 +302,16 @@ export function ChatApp() {
       </header>
 
       <main className="mx-auto flex w-full max-w-5xl flex-1 flex-col px-4 py-6">
-        <div className="mb-4 rounded-xl border border-zinc-800 bg-zinc-950 p-4 text-sm text-zinc-400">
-          {mode === "chat" ? (
-            <p>
-              <span className="font-medium text-[#FF5C28]">Chat mode</span> — fast
-              replies with basic tools. Attach an image for multimodal reasoning
-              (use data URLs; see{" "}
-              <code className="rounded bg-zinc-900 px-1 text-zinc-200">
-                lib/subconscious.ts
-              </code>
-              ).
-            </p>
-          ) : (
-            <p>
-              <span className="font-medium text-[#FF5C28]">Agent mode</span> —
-              long-running multi-step agent with web search, background tasks, and
-              MCP tool stubs. Kick off research and let it run up to 30 tool
-              steps.
-            </p>
-          )}
-        </div>
-
+        {/* message list */}
         <div className="flex-1 space-y-4 overflow-y-auto rounded-2xl border border-zinc-800 bg-zinc-950 p-4">
           {messages.length === 0 && (
             <div className="flex h-full min-h-[320px] flex-col items-center justify-center text-center text-zinc-500">
               <p className="text-lg font-medium text-zinc-200">
-                Try something to get started
+                Click the mic and say:
               </p>
-              <ul className="mt-4 max-w-md space-y-2 text-sm">
-                <li>“What&apos;s the weather in Boston?”</li>
-                <li>“Calculate (17 * 23) + 100”</li>
-                <li>Attach a screenshot and ask what you see</li>
-                <li>
-                  Switch to Agent: “Research hackathon project ideas for retail
-                  AI”
-                </li>
-              </ul>
+              <p className="mt-3 text-sm text-zinc-400">
+                &ldquo;I want a blue mid-century sofa under $700&rdquo;
+              </p>
             </div>
           )}
 
@@ -207,9 +329,7 @@ export function ChatApp() {
               >
                 <div
                   className={`mb-1 text-xs font-medium uppercase tracking-wide ${
-                    message.role === "user"
-                      ? "text-black/60"
-                      : "text-[#FF5C28]"
+                    message.role === "user" ? "text-black/60" : "text-[#FF5C28]"
                   }`}
                 >
                   {message.role}
@@ -229,7 +349,7 @@ export function ChatApp() {
           {isBusy && (
             <div className="flex items-center gap-2 text-sm text-zinc-400">
               <span className="inline-block h-2 w-2 animate-pulse rounded-full bg-[#FF5C28]" />
-              {mode === "agent" ? "Agent running…" : "Thinking…"}
+              Agent shopping on Wayfair…
             </div>
           )}
         </div>
@@ -240,75 +360,121 @@ export function ChatApp() {
           </p>
         )}
 
-        <form onSubmit={handleSubmit} className="mt-4 space-y-3">
-          {imageFile && (
-            <div className="flex items-center gap-2 text-sm text-zinc-400">
-              <span>
-                Image:{" "}
-                <span className="text-[#FF5C28]">{imageFile.name}</span>
-              </span>
-              <button
-                type="button"
-                className="text-[#FF5C28] hover:text-[#ff7347] hover:underline"
-                onClick={() => {
-                  setImageFile(null);
-                  if (fileInputRef.current) fileInputRef.current.value = "";
-                }}
-              >
-                Remove
-              </button>
-            </div>
+        {/* cart summary card */}
+        {cartSummary && <CartSummaryCard summary={cartSummary} />}
+
+        {/* mic section */}
+        <div className="mt-6 flex flex-col items-center gap-3">
+          {/* transcript pill */}
+          {transcript && (
+            <p className="rounded-full border border-zinc-700 bg-zinc-900 px-4 py-1.5 text-sm text-zinc-300">
+              Heard: <span className="text-white">{transcript}</span>
+            </p>
           )}
 
-          <div className="flex gap-2">
-            <input
-              ref={fileInputRef}
-              type="file"
-              accept="image/*"
-              className="hidden"
-              onChange={(event) => {
-                const file = event.target.files?.[0];
-                if (file) setImageFile(file);
-              }}
-            />
+          {/* mic button */}
+          <div className="relative flex items-center justify-center">
+            {micStatus === "recording" && (
+              <span className="absolute inline-flex h-24 w-24 animate-ping rounded-full bg-[#FF5C28] opacity-20" />
+            )}
             <button
               type="button"
-              onClick={() => fileInputRef.current?.click()}
-              className="rounded-xl border border-zinc-800 bg-zinc-950 px-3 py-2 text-sm font-medium text-zinc-200 hover:border-[#FF5C28] hover:text-[#FF5C28]"
-              title="Attach image for multimodal reasoning"
+              onClick={handleMicClick}
+              disabled={micStatus === "processing" || isBusy}
+              className={`relative flex h-20 w-20 items-center justify-center rounded-full text-3xl shadow-lg transition-all ${
+                micStatus === "recording"
+                  ? "bg-red-600 hover:bg-red-700"
+                  : micStatus === "processing" || isBusy
+                    ? "cursor-not-allowed bg-zinc-700"
+                    : "bg-[#FF5C28] hover:bg-[#ff7347]"
+              }`}
+              title={micStatus === "recording" ? "Stop recording" : "Start recording"}
             >
-              Image
+              {micStatus === "recording" ? "⏹" : micStatus === "processing" ? "⏳" : "🎙"}
             </button>
-            <input
-              value={input}
-              onChange={(event) => setInput(event.target.value)}
-              placeholder={
-                mode === "agent"
-                  ? "Kick off a long-running agent task…"
-                  : "Send a message…"
-              }
-              className="flex-1 rounded-xl border border-zinc-800 bg-zinc-950 px-4 py-2 text-sm text-white outline-none placeholder:text-zinc-500 focus:border-[#FF5C28] focus:ring-2 focus:ring-[#FF5C28]/30"
-              disabled={isBusy}
-            />
-            {isBusy ? (
-              <button
-                type="button"
-                onClick={() => stop()}
-                className="rounded-xl border border-zinc-800 bg-zinc-900 px-4 py-2 text-sm font-medium text-zinc-200 hover:border-[#FF5C28]"
-              >
-                Stop
-              </button>
-            ) : (
-              <button
-                type="submit"
-                disabled={!input.trim() && !imageFile}
-                className="rounded-xl bg-[#FF5C28] px-4 py-2 text-sm font-medium text-black hover:bg-[#ff7347] disabled:opacity-40"
-              >
-                Send
-              </button>
-            )}
           </div>
-        </form>
+
+          <p className="text-xs text-zinc-500">
+            {micStatus === "recording" && "Recording… click to stop"}
+            {micStatus === "processing" && "Transcribing…"}
+            {micStatus === "idle" && !isBusy && "Click mic to speak your request"}
+            {isBusy && micStatus === "idle" && "Agent is running…"}
+          </p>
+
+          {/* text input toggle */}
+          <button
+            type="button"
+            onClick={() => setShowTextInput((v) => !v)}
+            className="text-xs text-zinc-600 underline hover:text-zinc-400"
+          >
+            {showTextInput ? "Hide text input" : "or type instead"}
+          </button>
+
+          {showTextInput && (
+            <form onSubmit={handleSubmit} className="w-full space-y-2">
+              {imageFile && (
+                <div className="flex items-center gap-2 text-sm text-zinc-400">
+                  <span>
+                    Image: <span className="text-[#FF5C28]">{imageFile.name}</span>
+                  </span>
+                  <button
+                    type="button"
+                    className="text-[#FF5C28] hover:underline"
+                    onClick={() => {
+                      setImageFile(null);
+                      if (fileInputRef.current) fileInputRef.current.value = "";
+                    }}
+                  >
+                    Remove
+                  </button>
+                </div>
+              )}
+              <div className="flex gap-2">
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept="image/*"
+                  className="hidden"
+                  onChange={(e) => {
+                    const file = e.target.files?.[0];
+                    if (file) setImageFile(file);
+                  }}
+                />
+                <button
+                  type="button"
+                  onClick={() => fileInputRef.current?.click()}
+                  className="rounded-xl border border-zinc-800 bg-zinc-950 px-3 py-2 text-sm font-medium text-zinc-200 hover:border-[#FF5C28] hover:text-[#FF5C28]"
+                >
+                  Image
+                </button>
+                <input
+                  value={input}
+                  onChange={(e) => setInput(e.target.value)}
+                  placeholder="Describe what furniture you want…"
+                  className="flex-1 rounded-xl border border-zinc-800 bg-zinc-950 px-4 py-2 text-sm text-white outline-none placeholder:text-zinc-500 focus:border-[#FF5C28] focus:ring-2 focus:ring-[#FF5C28]/30"
+                  disabled={isBusy}
+                />
+                {isBusy ? (
+                  <button
+                    type="button"
+                    onClick={() => stop()}
+                    className="rounded-xl border border-zinc-800 bg-zinc-900 px-4 py-2 text-sm font-medium text-zinc-200 hover:border-[#FF5C28]"
+                  >
+                    Stop
+                  </button>
+                ) : (
+                  <button
+                    type="submit"
+                    disabled={!input.trim() && !imageFile}
+                    className="rounded-xl bg-[#FF5C28] px-4 py-2 text-sm font-medium text-black hover:bg-[#ff7347] disabled:opacity-40"
+                  >
+                    Send
+                  </button>
+                )}
+              </div>
+            </form>
+          )}
+        </div>
       </main>
     </div>
   );
