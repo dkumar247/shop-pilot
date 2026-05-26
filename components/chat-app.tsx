@@ -44,6 +44,9 @@ function MessagePart({
   if (part.type.startsWith("tool-")) {
     const label = part.type.replace("tool-", "");
     const state = "state" in part ? part.state : "unknown";
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const output = (part as any).output as Record<string, Record<string, unknown>> | undefined;
+
     return (
       <div
         key={`${messageId}-tool-${index}`}
@@ -52,8 +55,30 @@ function MessagePart({
         <div className="font-medium text-[#FF5C28]">Tool: {label}</div>
         <div className="mt-1 text-zinc-400">
           {state === "input-available" && "Calling…"}
-          {state === "output-available" && "Done"}
           {state === "output-error" && "Error"}
+          {state === "output-available" && label === "parseShoppingRequest" && output ? (
+            <div className="mt-2 space-y-2">
+              {Object.entries(output).map(([item, attrs]) => (
+                <div key={item}>
+                  <span className="font-semibold capitalize text-white">{item}</span>
+                  <div className="mt-1 flex flex-wrap gap-1">
+                    {Object.entries(attrs).map(([k, v]) =>
+                      v !== undefined && v !== null && v !== "" ? (
+                        <span
+                          key={k}
+                          className="rounded-full border border-[#FF5C28]/50 bg-zinc-900 px-2 py-0.5 text-zinc-300"
+                        >
+                          {k}: <span className="text-white">{String(v)}</span>
+                        </span>
+                      ) : null
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : (
+            state === "output-available" && "Done"
+          )}
         </div>
       </div>
     );
