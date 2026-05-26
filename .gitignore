@@ -55,6 +55,9 @@ yarn-debug.log*
 yarn-error.log*
 .pnpm-debug.log*
 
+# private local notes
+PROGRESS.md
+
 # pnpm local config
 pnpm-workspace.yaml
 .npmrc
