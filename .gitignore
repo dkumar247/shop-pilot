@@ -55,6 +55,10 @@ yarn-debug.log*
 yarn-error.log*
 .pnpm-debug.log*
 
+# pnpm local config
+pnpm-workspace.yaml
+.npmrc
+
 # misc
 *.pem
 *.p12
