@@ -1,6 +1,16 @@
 import { tool } from "ai";
 import { z } from "zod";
 import { SUBCONSCIOUS_MODEL_ID } from "@/lib/subconscious";
+import {
+  searchWayfair as _searchWayfair,
+  getProducts as _getProducts,
+  applyPriceFilter as _applyPriceFilter,
+  navigateToFirstProduct as _navigateToFirstProduct,
+  readProductDescription as _readProductDescription,
+  setQuantity as _setQuantity,
+  addToCart as _addToCart,
+  getCartSummary as _getCartSummary,
+} from "@/lib/tools/wayfair";
 
 const ShoppingItemSchema = z.object({
   quantity: z.number().int().min(1),
@@ -168,6 +178,66 @@ export const runLongTask = tool({
   },
 });
 
+// ─── Wayfair Playwright tools ─────────────────────────────────────────────────
+// Each tool wraps the raw function from wayfair.ts with a Zod input schema.
+// The agent calls these in sequence based on the parseShoppingRequest output.
+
+export const searchWayfair = tool({
+  description: "Search Wayfair for a furniture item. Build the query from item name + color + style from the shopping list.",
+  inputSchema: z.object({
+    query: z.string().describe("Search query e.g. 'blue mid-century sofa'"),
+  }),
+  execute: async ({ query }) => _searchWayfair(query),
+});
+
+export const getProducts = tool({
+  description: "Get the first 5 products from the current Wayfair search results page.",
+  inputSchema: z.object({}),
+  execute: async () => _getProducts(),
+});
+
+export const applyPriceFilter = tool({
+  description: "Filter search results by maximum price. Call after searchWayfair when the user specified a maxPrice.",
+  inputSchema: z.object({
+    maxPrice: z.number().describe("Maximum price in USD"),
+  }),
+  execute: async ({ maxPrice }) => _applyPriceFilter(maxPrice),
+});
+
+export const navigateToFirstProduct = tool({
+  description: "Click into the first product on the current search results page.",
+  inputSchema: z.object({}),
+  execute: async () => _navigateToFirstProduct(),
+});
+
+export const readProductDescription = tool({
+  description: "Navigate to a product page and read its name, price, and description to decide if it matches the request.",
+  inputSchema: z.object({
+    productUrl: z.string().describe("Full Wayfair product URL"),
+  }),
+  execute: async ({ productUrl }) => _readProductDescription(productUrl),
+});
+
+export const setQuantity = tool({
+  description: "Set the quantity on the current product page. Call before addToCart when quantity > 1.",
+  inputSchema: z.object({
+    quantity: z.number().int().min(1).describe("Number of units to purchase"),
+  }),
+  execute: async ({ quantity }) => _setQuantity(quantity),
+});
+
+export const addToCart = tool({
+  description: "Click Add to Cart on the current product page.",
+  inputSchema: z.object({}),
+  execute: async () => _addToCart(),
+});
+
+export const getCartSummary = tool({
+  description: "Navigate to the Wayfair cart and return the list of items and order total. Always call this last.",
+  inputSchema: z.object({}),
+  execute: async () => _getCartSummary(),
+});
+
 export const chatTools = {
   getWeather,
   calculate,
@@ -175,6 +245,14 @@ export const chatTools = {
 
 export const agentTools = {
   parseShoppingRequest,
+  searchWayfair,
+  getProducts,
+  applyPriceFilter,
+  navigateToFirstProduct,
+  readProductDescription,
+  setQuantity,
+  addToCart,
+  getCartSummary,
   getWeather,
   calculate,
   webSearch,
